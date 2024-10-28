@@ -56,7 +56,7 @@ void setup() {
     Serial.println("Fallos de comunicación con el ADS1220");
     while(1);
   }
-  //En esta sección se configura el ADS1220 para la lectura del termistos
+  //En esta sección se configura el ADS1220 para la lectura del termistor
   ads.setCompareChannels(ADS1220_MUX_0_3);
   ads.setGain(ADS1220_GAIN_1);
   ads.bypassPGA(true); //Se desactiva el PGA
@@ -69,7 +69,7 @@ void setup() {
   // Inicializar variables para la entrada del sensor
   //int lecturaInput = analogRead(TERMISTOR_PIN);
   voltajeInput = ads.getVoltage_mV();//leemos el voltaje del ADS1220 directamente en milivoltios
-  Input = calcularTemperatura(voltajeInput);
+  Input = calcularTemperatura(voltajeInput, 10);
   // Setpoint inicial
   Setpoint = TEMP_0;
   // Definimos los límites para la salida del controlador
