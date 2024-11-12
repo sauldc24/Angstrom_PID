@@ -9,99 +9,69 @@
 #define MAX_OUTPUT 255
 #define ADS1220_CS_PIN    7 // chip select pin para el ADS1220
 #define ADS1220_DRDY_PIN  6 // data ready pin para el ADS1220
+#define ADS1220_CS_PIN_2  5     // Chip select pin for second ADC (control + flux)
+#define ADS1220_DRDY_PIN_2 4    // Data ready pin for second ADC
 #define IDAC_CURRENT 50.0 //corriente del IDAC en uA
+#define VREF 2.048             // Reference voltage (V)
+#define SPI_CLOCK 4000000    
 
 // Coeficientes de Steinhart-Hart
 const float A = 1.016156e-03;
 const float B = 2.545381e-04;
 const float C = -9.116603e-09;
 
+// Heat flux sensor calibration constants
+const float So = 3.91;    // Base sensitivity μV/(W/m²)
+const float Sc = 0.0047;  // Temperature correction factor (μV/(W/m²))/°C
+const float To = 22.5;    // Calibration temperature °C
+
+
 /*variables para la medición de voltajes, resistencias y temperaturass. Las variables con el número 1 corresponden a las del termistor
 usado como referencia para el PID, las variables con el número 2 corresponden a las del termistor de monitoreo*/
-float voltage1 = 0.0;
-float voltage2 = 0.0;
-float resistance1 = 0.0;
-float resistance2 = 0.0;
-double temperature1 = 0.0;
-float temperature2 = 0.0;
+float controlVoltage = 0.0;
+float hotVoltage = 0.0;
+float coldVoltage = 0.0;
+float heatFluxVoltage = 0.0;
+float heatFlux = 0.0;
+float controlResistance = 0.0;
+float hotResistance = 0.0;
+float coldResistance = 0.0;
+double controlTemp = 0.0;
+float hotTemp = 0.0;
+float coldTemp = 0.0;
 
 // Variables para el PID
 double Setpoint, Input, Output;
 double Kp=150., Ki=10., Kd=25.;
-PID myPID(&temperature1, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
+PID myPID(&controlTemp, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 // String para recibir nuevo valor del setpoint proporcionado por el usuario
 String receivedSetpoint; 
 
 // Constantes para la ecuación del setpoint
 const float TEMP_0 = 25.0;    // Temperatura base en °C
 const float AMP = 5.0;        // Amplitud de la función seno en °C
-const float FREQ = 0.001;       // Frecuencia de modulación en Hz
+const float FREQ = 0.1;       // Frecuencia de modulación en Hz
 
 //Objeto para controlar el ADS1220
-ADS1220_WE ads = ADS1220_WE(ADS1220_CS_PIN, ADS1220_DRDY_PIN);
+ADS1220_WE ads1 = ADS1220_WE(ADS1220_CS_PIN, ADS1220_DRDY_PIN);
+ADS1220_WE ads2 = ADS1220_WE(ADS1220_CS_PIN_2, ADS1220_DRDY_PIN_2);
 
-//variables para determinar el momento en el que se manda la información al puerto serial
-unsigned long ultimoTiempoDisplay = 0;//guarda el último tiempo en el que se mandó la información al puerto serial
-float t = 0;//variable para guardar el tiempo en cada ejecución del bucle loop
-const int NM = 5000; // Número de milisegundos a los cuales se muestra la temperatura
+// Timing variables
+unsigned long lastDisplayTime = 0;
+const int DISPLAY_INTERVAL = 100;  // Display interval in ms
 
-void setup() {
-  // Inicializamos el puerto serial
-  Serial.begin(9600);
-  if(!ads.init()){
-    Serial.println("Fallos de comunicación con el ADS1220");
-    while(1);
-  }
-  //En esta sección se configura el ADS1220 para la lectura del termistor
-  ads.setGain(ADS1220_GAIN_1);
-  ads.bypassPGA(true); // true disables PGA, false enables PGA
-  ads.setIdacCurrent(ADS1220_IDAC_50_MU_A);//Este hay que ponerlo manualmente por que las definiciones dependen de los registros
-  ads.setIdac1Routing(ADS1220_IDAC_AIN0_REFP1);//IDAC 1 en el pin AIN0
-  ads.setIdac2Routing(ADS1220_IDAC_AIN1);//IDAC 2 en el pin AIN1
 
-  // Setpoint inicial
-  Setpoint = TEMP_0;
-  // Definimos los límites para la salida del controlador
-  myPID.SetOutputLimits(MIN_OUTPUT, MAX_OUTPUT);
-  // Activamos el PID
-  myPID.SetMode(AUTOMATIC);
+float calcularTemperatura(float voltaje_mV, float corriente_uA) {
+  float resistencia = voltaje_mV*1000/corriente_uA; //Aquí calculamos la resistencia con la corriente de excitación pasada como argumento (el x 1000 es para dejarlo en unidades de ohms)
+  float logR = log(resistencia);
+  float temperaturaKelvin = 1.0 / (A + B * logR + C * logR * logR * logR);
+  return temperaturaKelvin - 273.15;  // Convertir a Celsius
 }
 
-void loop() {
-  unsigned long tiempoActual = millis();
-  // Calcular el tiempo en segundos
-  float t = tiempoActual / 1000.0;
-  // Actualizar el setpoint según la ecuación dada
-  Setpoint = TEMP_0 + AMP * sin(2 * PI * FREQ * t);
-  /*El bucle if revisa si hay datos en el puerto serial para actualizar el set point*/
-  if (Serial.available() > 0){
-    Setpoint = Serial.parseFloat();
-    Serial.readStringUntil('\n'); // Limpiar el buffer
-  }
-
-  // En esta sección se leen los voltajes y temperaturas de los sensores
-  ads.setCompareChannels(ADS1220_MUX_0_3);//configurar el multiplexor en los pines del termistor 1
-  voltage1 = ads.getVoltage_mV(); // voltaje del termistor 1
-  temperature1 = calcularTemperatura(voltage1, IDAC_CURRENT);
-  ads.setCompareChannels(ADS1220_MUX_1_2);//configurar el multiplexor en los pines del termistor 2
-  voltage2 = ads.getVoltage_mV(); // voltaje del termistor 2
-  temperature2 = calcularTemperatura(voltage1, IDAC_CURRENT);
-
-  // Calcular PID y controlar salida continuamente
-  myPID.Compute();
-  controlOutput(HEAT_OUTPUT, COOL_OUTPUT, Output);
-
-  // Mostrar temperaturas cada NM milisegundos
-  if (tiempoActual - ultimoTiempoDisplay >= NM) {
-    ultimoTiempoDisplay = tiempoActual;
-    Serial.print(TEMP_0 + AMP);
-    Serial.print(", ");
-    Serial.print(TEMP_0 - AMP);
-    Serial.print(", ");
-    Serial.print(temperature1);
-    Serial.print(",   ");
-    Serial.println(temperature2);
-  }
+// Function to calculate heat flux from voltage and temperature
+float calcHeatFlux(float voltage_uV, float temp) {
+  float S = So + (temp - To) * Sc;  // Temperature-corrected sensitivity
+  return voltage_uV / S;            // Heat flux in W/m²
 }
 
 void controlOutput(uint8_t heatPin, uint8_t coolPin, double outputValue){
@@ -116,9 +86,95 @@ void controlOutput(uint8_t heatPin, uint8_t coolPin, double outputValue){
   }
 }
 
-float calcularTemperatura(float voltaje_mV, float corriente_uA) {
-  float resistencia = voltaje_mV*1000/corriente_uA; //Aquí calculamos la resistencia con la corriente de excitación pasada como argumento (el x 1000 es para dejarlo en unidades de ohms)
-  float logR = log(resistencia);
-  float temperaturaKelvin = 1.0 / (A + B * logR + C * logR * logR * logR);
-  return temperaturaKelvin - 273.15;  // Convertir a Celsius
+void setup() {
+  // Inicializamos el puerto serial
+  Serial.begin(115200);
+  // Initialize both ADCs
+  if(!ads1.init() || !ads2.init()){
+    Serial.println("ADC communication failure");
+    while(1);
+  }
+  //En esta sección se configura el ADS1220 para la lectura del termistor
+  // Configure ADC1 for hot/cold temperature measurements
+  ads1.setGain(ADS1220_GAIN_1);
+  ads1.bypassPGA(true);
+  ads1.setIdacCurrent(ADS1220_IDAC_50_MU_A);
+  ads1.setIdac1Routing(ADS1220_IDAC_AIN0_REFP1);
+  ads1.setIdac2Routing(ADS1220_IDAC_AIN1);
+  ads1.setDataRate(ADS1220_DR_LVL_0);
+  ads1.setFIRFilter(ADS1220_60HZ);
+  ads1.setConversionMode(ADS1220_CONTINUOUS);
+  ads1.setOperatingMode(ADS1220_TURBO_MODE);
+  ads1.setSPIClockSpeed(SPI_CLOCK);
+  ads1.setVRefValue_V(VREF);
+  ads1.start();
+
+  // Configure ADC2 for control temperature and heat flux
+  ads2.setGain(ADS1220_GAIN_1);
+  ads2.bypassPGA(true);
+  ads2.setIdacCurrent(ADS1220_IDAC_50_MU_A);
+  ads2.setIdac1Routing(ADS1220_IDAC_AIN1);
+  ads2.setDataRate(ADS1220_DR_LVL_0);
+  ads2.setFIRFilter(ADS1220_60HZ);
+  ads2.setConversionMode(ADS1220_CONTINUOUS);
+  ads2.setOperatingMode(ADS1220_TURBO_MODE);
+  ads2.setSPIClockSpeed(SPI_CLOCK);
+  ads2.setVRefValue_V(VREF);
+  ads2.start();
+
+  // Setpoint inicial
+  Setpoint = TEMP_0;
+  // Definimos los límites para la salida del controlador
+  myPID.SetOutputLimits(MIN_OUTPUT, MAX_OUTPUT);
+  // Activamos el PID
+  myPID.SetMode(AUTOMATIC);
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+  float t = currentTime / 1000.0;
+  // Actualizar el setpoint según la ecuación dada
+  Setpoint = TEMP_0 + AMP * sin(2 * PI * FREQ * t);
+  /*El bucle if revisa si hay datos en el puerto serial para actualizar el set point*/
+  if (Serial.available() > 0){
+    Setpoint = Serial.parseFloat();
+    Serial.readStringUntil('\n'); // Limpiar el buffer
+  }
+
+  // En esta sección se lee el ads2
+  ads2.setCompareChannels(ADS1220_MUX_1_2);//configurar el multiplexor en los pines del termistor de control
+  controlVoltage = ads2.getVoltage_mV(); // voltaje del termistor de control
+  controlTemp = calcularTemperatura(controlVoltage, IDAC_CURRENT);
+  ads2.setCompareChannels(ADS1220_MUX_0_3);//configurar el multiplexor en los pines del sensor de flujo de calor
+  heatFluxVoltage = ads2.getVoltage_mV(); // voltaje del sensor de flujo de calor
+  heatFlux = calcHeatFlux(heatFluxVoltage, controlTemp);
+
+  // En esta sección se lee el ads1
+  ads1.setCompareChannels(ADS1220_MUX_1_2);//configurar el multiplexor en los pines del termistor de la cara fría
+  coldVoltage = ads1.getVoltage_mV(); // voltaje del termistor de la cara fría
+  coldTemp = calcularTemperatura(coldVoltage, IDAC_CURRENT);
+  ads1.setCompareChannels(ADS1220_MUX_0_3);//configurar el multiplexor en los pines del termistor de la cara caliente
+  hotVoltage = ads1.getVoltage_mV(); // voltaje del termistor de la cara caliente
+  hotTemp = calcularTemperatura(hotVoltage, IDAC_CURRENT);
+
+  // Calcular PID y controlar salida continuamente
+  myPID.Compute();
+  controlOutput(HEAT_OUTPUT, COOL_OUTPUT, Output);
+
+  // Mostrar temperaturas cada NM milisegundos
+  // Display data at specified interval
+  if (currentTime - lastDisplayTime >= DISPLAY_INTERVAL) {
+    lastDisplayTime = currentTime;
+    Serial.print(TEMP_0 + AMP);
+    Serial.print(", ");
+    Serial.print(TEMP_0 - AMP);
+    Serial.print(", ");
+    Serial.print(controlTemp);
+    Serial.print(", ");
+    Serial.print(hotTemp);
+    Serial.print(", ");
+    Serial.print(coldTemp);
+    Serial.print(", ");
+    Serial.println(heatFlux);
+  }
 }
