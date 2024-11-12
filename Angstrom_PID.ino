@@ -60,6 +60,10 @@ ADS1220_WE ads2 = ADS1220_WE(ADS1220_CS_PIN_2, ADS1220_DRDY_PIN_2);
 unsigned long lastDisplayTime = 0;
 const int DISPLAY_INTERVAL = 100;  // Display interval in ms
 
+//Variables relacionadas con la comunicación del instrumento
+String inputBuffer = "";  // Buffer to store incoming characters
+bool commandReady = false; // Flag to indicate command is ready to be processed
+
 
 float calcularTemperatura(float voltaje_mV, float corriente_uA) {
   float resistencia = voltaje_mV*1000/corriente_uA; //Aquí calculamos la resistencia con la corriente de excitación pasada como argumento (el x 1000 es para dejarlo en unidades de ohms)
@@ -135,12 +139,29 @@ void loop() {
   float t = currentTime / 1000.0;
   // Actualizar el setpoint según la ecuación dada
   Setpoint = TEMP_0 + AMP * sin(2 * PI * FREQ * t);
-  /*El bucle if revisa si hay datos en el puerto serial para actualizar el set point*/
-  if (Serial.available() > 0){
-    Setpoint = Serial.parseFloat();
-    Serial.readStringUntil('\n'); // Limpiar el buffer
-  }
+  /*Se leen los datos del puerto serial en caso de estar disponibles*/
+  while (Serial.available() > 0) {
+    char receivedChar = Serial.read();   // Read one character at a time
+    inputBuffer += receivedChar;         // Append character to buffer
 
+    // Check if CRLF (carriage return + line feed) is detected
+    if (inputBuffer.endsWith("\r\n")) {
+      commandReady = true;
+      break; // Exit the loop once CRLF is detected
+    }
+  }
+  // Se procesa el comando si está listo
+  if (commandReady) {
+    // Remove CRLF from the end of the buffer
+    inputBuffer.trim();
+
+    // Parse and handle the command
+    handleCommand(inputBuffer);
+
+    // Clear the buffer and reset the flag
+    inputBuffer = "";
+    commandReady = false;
+  }
   // En esta sección se lee el ads2
   ads2.setCompareChannels(ADS1220_MUX_1_2);//configurar el multiplexor en los pines del termistor de control
   controlVoltage = ads2.getVoltage_mV(); // voltaje del termistor de control
@@ -160,21 +181,4 @@ void loop() {
   // Calcular PID y controlar salida continuamente
   myPID.Compute();
   controlOutput(HEAT_OUTPUT, COOL_OUTPUT, Output);
-
-  // Mostrar temperaturas cada NM milisegundos
-  // Display data at specified interval
-  if (currentTime - lastDisplayTime >= DISPLAY_INTERVAL) {
-    lastDisplayTime = currentTime;
-    Serial.print(TEMP_0 + AMP);
-    Serial.print(", ");
-    Serial.print(TEMP_0 - AMP);
-    Serial.print(", ");
-    Serial.print(controlTemp);
-    Serial.print(", ");
-    Serial.print(hotTemp);
-    Serial.print(", ");
-    Serial.print(coldTemp);
-    Serial.print(", ");
-    Serial.println(heatFlux);
-  }
 }
