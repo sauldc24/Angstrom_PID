@@ -48,9 +48,13 @@ PID myPID(&controlTemp, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
 String receivedSetpoint; 
 
 // Constantes para la ecuación del setpoint
-const float TEMP_0 = 25.0;    // Temperatura base en °C
-const float AMP = 5.0;        // Amplitud de la función seno en °C
-const float FREQ = 0.1;       // Frecuencia de modulación en Hz
+float TEMP_0 = 25.0;    // Temperatura base en °C
+float AMP = 5.0;        // Amplitud de la función seno en °C
+float FREQ = 0.1;       // Frecuencia de modulación en Hz
+
+//variables para el modo y estado del sistema
+bool isTempControlActive = false;
+bool isOscControlActive = false;
 
 //Objeto para controlar el ADS1220
 ADS1220_WE ads1 = ADS1220_WE(ADS1220_CS_PIN, ADS1220_DRDY_PIN);
@@ -156,7 +160,7 @@ void loop() {
     inputBuffer.trim();
 
     // Parse and handle the command
-    handleCommand(inputBuffer);
+    parseCommand(inputBuffer);
 
     // Clear the buffer and reset the flag
     inputBuffer = "";
@@ -181,4 +185,68 @@ void loop() {
   // Calcular PID y controlar salida continuamente
   myPID.Compute();
   controlOutput(HEAT_OUTPUT, COOL_OUTPUT, Output);
+}
+
+
+
+
+
+/*En esta sección tenemos toda la lógica que implementa el esquema de comunicación*/
+void parseCommand(String command) {
+  if (command.startsWith("setTemp")) {
+    TEMP_0 = command.substring(8).toFloat();
+    Serial.println("OK");
+  }
+  else if (command.startsWith("setOsc")) {
+    TEMP_0 = command.substring(8, command.indexOf(',')).toFloat();  // Set TEMP_0 (T)
+    AMP = command.substring(command.indexOf(',') + 1, command.lastIndexOf(',')).toFloat(); // Set AMP (A)
+    FREQ = command.substring(command.lastIndexOf(',') + 1).toFloat(); // Set FREQ (F)
+    Serial.println("OK");
+  }
+  else if (command.startsWith("setPID")) {
+    float newKp = command.substring(7, command.indexOf(',')).toFloat();
+    float newKi = command.substring(command.indexOf(',') + 1, command.lastIndexOf(',')).toFloat();
+    float newKd = command.substring(command.lastIndexOf(',') + 1).toFloat();
+    myPID.SetTunings(newKp, newKi, newKd);
+    Serial.println("OK");
+}
+  else if (command == "startTemp") {
+    isTempControlActive = true;
+    Serial.println("OK");
+  }
+  else if (command == "startOsc") {
+    isOscControlActive = true;
+    Serial.println("OK");
+  }
+  else if (command == "stop") {
+    myPID.SetMode(MANUAL);
+    Output = 0;
+    Serial.println("OK");
+  }
+  else if (command == "getControlTemp") {
+    Serial.println(controlTemp);
+  }
+  else if (command == "getColdTemp") {
+    Serial.println(coldTemp);
+  }
+  else if (command == "gethotTemp") {
+    Serial.println(hotTemp);
+  }
+  else if (command == "getData") {
+    // Send the values of controlTemp, coldTemp, and hotTemp in a single line, separated by commas
+    Serial.print(controlTemp);
+    Serial.print(",");
+    Serial.print(coldTemp);
+    Serial.print(",");
+    Serial.println(hotTemp); // println automatically adds CRLF
+  }
+  else if (command == "getConfig") {
+    if (isTempControlActive) {
+      Serial.println("CONST," + String(TEMP_0));
+    } else if (isOscControlActive) {
+      Serial.println("OSC," + String(TEMP_0) + "," + String(AMP) + "," + String(FREQ));
+    }
+  } else {
+    Serial.println("ERROR");
+  }
 }
